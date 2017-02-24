@@ -33,7 +33,7 @@ type writeResult struct {
 // Session defines a multiplexed connection for streams
 type Session struct {
 	conn   io.ReadWriteCloser
-	reader *bufreader.BufReader
+	reader *bufreader.Reader
 
 	config       *Config
 	nextStreamID uint32 // next stream identifier
@@ -59,7 +59,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
 	s.die = make(chan struct{})
 	s.conn = conn
-	s.reader = bufreader.NewBufReader(conn, 1024)
+	s.reader = bufreader.NewReader(conn, 1024)
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
