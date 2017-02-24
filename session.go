@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lightpaw/bufreader"
 	"github.com/pkg/errors"
 )
 
@@ -31,7 +32,8 @@ type writeResult struct {
 
 // Session defines a multiplexed connection for streams
 type Session struct {
-	conn io.ReadWriteCloser
+	conn   io.ReadWriteCloser
+	reader *bufreader.BufReader
 
 	config       *Config
 	nextStreamID uint32 // next stream identifier
@@ -57,6 +59,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	s := new(Session)
 	s.die = make(chan struct{})
 	s.conn = conn
+	s.reader = bufreader.NewBufReader(conn, 1024)
 	s.config = config
 	s.streams = make(map[uint32]*Stream)
 	s.chAccepts = make(chan *Stream, defaultAcceptBacklog)
@@ -185,31 +188,26 @@ func (s *Session) returnTokens(n int) {
 
 // session read a frame from underlying connection
 // it's data is pointed to the input buffer
-func (s *Session) readFrame(buffer []byte) (f Frame, err error) {
-	if _, err := io.ReadFull(s.conn, buffer[:headerSize]); err != nil {
+func (s *Session) readFrame() (f Frame, err error) {
+	header, err := s.reader.ReadFull(headerSize)
+	if err != nil {
 		return f, errors.Wrap(err, "readFrame")
 	}
 
-	dec := rawHeader(buffer)
-	if dec.Version() != version {
-		return f, errors.New(errInvalidProtocol)
-	}
+	dec := rawHeader(header)
 
-	f.ver = dec.Version()
 	f.cmd = dec.Cmd()
 	f.sid = dec.StreamID()
 	if length := dec.Length(); length > 0 {
-		if _, err := io.ReadFull(s.conn, buffer[headerSize:headerSize+length]); err != nil {
+		if f.data, err = s.reader.ReadFull(int(dec.Length())); err != nil {
 			return f, errors.Wrap(err, "readFrame")
 		}
-		f.data = buffer[headerSize : headerSize+length]
 	}
 	return f, nil
 }
 
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
-	buffer := make([]byte, (1<<16)+headerSize)
 	for {
 		s.bucketCond.L.Lock()
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
@@ -221,7 +219,7 @@ func (s *Session) recvLoop() {
 			return
 		}
 
-		if f, err := s.readFrame(buffer); err == nil {
+		if f, err := s.readFrame(); err == nil {
 			atomic.StoreInt32(&s.dataReady, 1)
 
 			switch f.cmd {
@@ -253,10 +251,12 @@ func (s *Session) recvLoop() {
 				}
 				s.streamLock.Unlock()
 			default:
+				s.reader.Close()
 				s.Close()
 				return
 			}
 		} else {
+			s.reader.Close()
 			s.Close()
 			return
 		}
@@ -294,10 +294,9 @@ func (s *Session) sendLoop() {
 			if !ok {
 				continue
 			}
-			buf[0] = request.frame.ver
-			buf[1] = request.frame.cmd
-			binary.LittleEndian.PutUint16(buf[2:], uint16(len(request.frame.data)))
-			binary.LittleEndian.PutUint32(buf[4:], request.frame.sid)
+			buf[0] = request.frame.cmd
+			binary.LittleEndian.PutUint16(buf[1:], uint16(len(request.frame.data)))
+			binary.LittleEndian.PutUint32(buf[3:], request.frame.sid)
 			copy(buf[headerSize:], request.frame.data)
 			n, err := s.conn.Write(buf[:headerSize+len(request.frame.data)])
 

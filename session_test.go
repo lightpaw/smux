@@ -469,7 +469,6 @@ func TestRandomFrame(t *testing.T) {
 	session, _ = Client(cli, nil)
 	for i := 0; i < 100; i++ {
 		f := newFrame(byte(rand.Uint32()), rand.Uint32())
-		f.ver = byte(rand.Uint32())
 		session.writeFrame(f)
 	}
 	cli.Close()
@@ -487,10 +486,9 @@ func TestRandomFrame(t *testing.T) {
 	f.data = rnd
 
 	buf := make([]byte, headerSize+len(f.data))
-	buf[0] = f.ver
-	buf[1] = f.cmd
-	binary.LittleEndian.PutUint16(buf[2:], uint16(len(rnd)+1)) /// incorrect size
-	binary.LittleEndian.PutUint32(buf[4:], f.sid)
+	buf[0] = f.cmd
+	binary.LittleEndian.PutUint16(buf[1:], uint16(len(rnd)+1)) /// incorrect size
+	binary.LittleEndian.PutUint32(buf[3:], f.sid)
 	copy(buf[headerSize:], f.data)
 
 	session.conn.Write(buf)
